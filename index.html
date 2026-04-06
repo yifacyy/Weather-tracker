@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>天氣與痛症追蹤 App</title>
+    <!-- Tailwind CSS for modern UI -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Chart.js for data visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;700&display=swap');
+        
+        :root {
+            --primary: #4f46e5;
+            --danger: #ef4444;
+        }
+
+        body {
+            font-family: 'Noto Sans TC', sans-serif;
+            background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+            min-height: 100vh;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .glass-card {
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.5);
+            border-radius: 1.5rem;
+        }
+
+        .pain-chip {
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .pain-chip.active {
+            background-color: var(--danger);
+            color: white;
+            transform: scale(1.05);
+            box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 24px;
+            width: 24px;
+            border-radius: 50%;
+            background: white;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+            cursor: pointer;
+            margin-top: -8px;
+        }
+
+        /* 隱藏捲軸但保留功能 */
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body class="pb-20">
+
+    <div class="max-w-md mx-auto px-4 pt-8">
+        <!-- App Header -->
+        <div class="flex justify-between items-start mb-6">
+            <div>
+                <h1 class="text-2xl font-black text-slate-800 tracking-tight">WeatherBody</h1>
+                <p class="text-xs text-slate-500 font-medium uppercase tracking-widest">痛症與氣候關聯日誌</p>
+            </div>
+            <button onclick="exportData()" class="p-2 bg-white rounded-full shadow-sm text-slate-400 hover:text-blue-500">
+                <i data-lucide="download" class="w-5 h-5"></i>
+            </button>
+        </div>
+
+        <!-- Weather Engine -->
+        <div class="glass-card p-5 mb-6 shadow-sm">
+            <div class="flex gap-2 mb-4">
+                <div class="relative flex-1">
+                    <i data-lucide="map-pin" class="absolute left-3 top-3 w-4 h-4 text-slate-400"></i>
+                    <input id="cityInput" type="text" placeholder="城市 (如: Hong Kong)" 
+                           class="w-full pl-9 pr-4 py-2.5 bg-slate-100/50 rounded-xl text-sm focus:ring-2 focus:ring-indigo-400 outline-none">
+                </div>
+                <button onclick="fetchWeather()" class="bg-indigo-600 text-white px-4 py-2 rounded-xl text-sm font-bold shadow-md active:scale-95 transition-all">
+                    獲取
+                </button>
+            </div>
+            
+            <div id="weatherBox" class="hidden flex items-center justify-between bg-white/50 p-4 rounded-2xl border border-white">
+                <div class="flex items-center gap-3">
+                    <div id="weatherIcon" class="text-3xl text-indigo-500">☁️</div>
+                    <div>
+                        <p id="tempVal" class="text-xl font-bold text-slate-800">--°C</p>
+                        <p id="weatherDesc" class="text-xs text-slate-500 font-medium">--</p>
+                    </div>
+                </div>
+                <div class="text-right">
+                    <p class="text-[10px] text-slate-400 font-bold uppercase">相對濕度</p>
+                    <p id="humidVal" class="text-xl font-black text-blue-500">--%</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Entry Form -->
+        <div class="glass-card p-6 mb-6 shadow-sm">
+            <h2 class="text-sm font-bold text-slate-400 uppercase tracking-widest mb-4 flex items-center">
+                <i data-lucide="activity" class="w-4 h-4 mr-2 text-red-500"></i> 痛症部位
+            </h2>
+            
+            <div id="painChips" class="flex flex-wrap gap-2 mb-6">
+                <!-- Chips added by JS -->
+            </div>
+
+            <div id="intensitySection" class="hidden animate-in fade-in slide-in-from-top-2 duration-300">
+                <div class="flex justify-between items-end mb-2">
+                    <label class="text-sm font-bold text-slate-700">疼痛級別</label>
+                    <span id="painScore" class="text-2xl font-black text-red-500">1</span>
+                </div>
+                <input type="range" id="painRange" min="1" max="10" value="1" 
+                       class="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-red-500 mb-8"
+                       oninput="document.getElementById('painScore').innerText = this.value">
+            </div>
+
+            <div class="grid grid-cols-2 gap-4 mb-6">
+                <div>
+                    <label class="block text-xs font-bold text-slate-400 uppercase mb-2">心情</label>
+                    <select id="moodSelect" class="w-full p-3 bg-slate-100/50 rounded-xl text-sm outline-none border-none">
+                        <option value="5">😊 愉快</option>
+                        <option value="4">🙂 尚可</option>
+                        <option value="3" selected>😐 一般</option>
+                        <option value="2">🙁 低落</option>
+                        <option value="1">😢 難受</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-slate-400 uppercase mb-2">活力</label>
+                    <select id="bodySelect" class="w-full p-3 bg-slate-100/50 rounded-xl text-sm outline-none border-none">
+                        <option value="5">⚡ 充足</option>
+                        <option value="3" selected>🚶 正常</option>
+                        <option value="1">😫 疲倦</option>
+                    </select>
+                </div>
+            </div>
+
+            <textarea id="noteInput" placeholder="有什麼想備註的？(如：今晚轉涼了...)" 
+                      class="w-full p-4 bg-slate-100/50 rounded-2xl text-sm min-h-[80px] outline-none border-none mb-4"></textarea>
+
+            <button onclick="submitEntry()" class="w-full py-4 bg-slate-800 text-white rounded-2xl font-bold shadow-lg active:scale-95 transition-all">
+                儲存今日紀錄
+            </button>
+        </div>
+
+        <!-- Analytics -->
+        <div class="glass-card p-5 mb-6">
+            <h3 class="text-sm font-bold text-slate-400 uppercase mb-4 tracking-widest">數據分析</h3>
+            <div class="h-48 w-full">
+                <canvas id="mainChart"></canvas>
+            </div>
+        </div>
+
+        <!-- History -->
+        <div id="historyContainer" class="space-y-4">
+            <!-- Records -->
+        </div>
+    </div>
+
+    <!-- Navigation (Mobile Feel) -->
+    <div class="fixed bottom-0 left-0 right-0 bg-white/80 backdrop-blur-md border-t border-slate-100 px-8 py-3 flex justify-around items-center z-50">
+        <button onclick="window.scrollTo({top:0, behavior:'smooth'})" class="text-indigo-600"><i data-lucide="plus-circle"></i></button>
+        <button onclick="document.getElementById('historyContainer').scrollIntoView({behavior:'smooth'})" class="text-slate-400"><i data-lucide="history"></i></button>
+        <button onclick="exportData()" class="text-slate-400"><i data-lucide="share-2"></i></button>
+    </div>
+
+    <script>
+        // --- 核心邏輯 ---
+        const PAIN_PARTS = ["頭部", "頸部", "肩膊", "手肘", "手指", "腰背", "膝蓋", "腳踝"];
+        let activePainParts = new Set();
+        let weatherData = null;
+        let entries = JSON.parse(localStorage.getItem('weather_pain_v3')) || [];
+        let myChart = null;
+
+        // 初始化
+        document.addEventListener('DOMContentLoaded', () => {
+            lucide.createIcons();
+            initChips();
+            renderHistory();
+            renderChart();
+            
+            // 嘗試讀取上次輸入的城市
+            const lastCity = localStorage.getItem('last_city');
+            if(lastCity) {
+                document.getElementById('cityInput').value = lastCity;
+                fetchWeather();
+            }
+        });
+
+        function initChips() {
+            const container = document.getElementById('painChips');
+            container.innerHTML = PAIN_PARTS.map(part => `
+                <button onclick="toggleChip(this, '${part}')" class="pain-chip px-4 py-2 bg-white border border-slate-200 rounded-full text-xs font-medium text-slate-600 shadow-sm">
+                    ${part}
+                </button>
+            `).join('');
+        }
+
+        function toggleChip(el, part) {
+            if(activePainParts.has(part)) {
+                activePainParts.delete(part);
+                el.classList.remove('active');
+            } else {
+                activePainParts.add(part);
+                el.classList.add('active');
+            }
+            document.getElementById('intensitySection').classList.toggle('hidden', activePainParts.size === 0);
+        }
+
+        async function fetchWeather() {
+            const city = document.getElementById('cityInput').value;
+            if(!city) return;
+            localStorage.setItem('last_city', city);
+
+            try {
+                const res = await fetch(`https://api.openweathermap.org/data/2.5/weather?q=${city}&units=metric&appid=895284fb2d2c1d87c422f8c456294a28`);
+                const data = await res.json();
+                if(data.cod === 200) {
+                    weatherData = {
+                        temp: Math.round(data.main.temp),
+                        humid: data.main.humidity,
+                        desc: data.weather[0].description,
+                        icon: data.weather[0].icon
+                    };
+                    updateWeatherUI();
+                }
+            } catch(e) {
+                alert("獲取天氣失敗，請檢查網路");
+            }
+        }
+
+        function updateWeatherUI() {
+            const box = document.getElementById('weatherBox');
+            box.classList.remove('hidden');
+            document.getElementById('tempVal').innerText = `${weatherData.temp}°C`;
+            document.getElementById('humidVal').innerText = `${weatherData.humid}%`;
+            document.getElementById('weatherDesc').innerText = weatherData.desc;
+            document.getElementById('weatherIcon').innerText = getWeatherEmoji(weatherData.icon);
+        }
+
+        function getWeatherEmoji(iconCode) {
+            const map = {'01':'☀️','02':'⛅','03':'☁️','04':'☁️','09':'🌧️','10':'🌦️','11':'⛈️','13':'❄️','50':'🌫️'};
+            return map[iconCode.substring(0,2)] || '🌡️';
+        }
+
+        function submitEntry() {
+            const entry = {
+                id: Date.now(),
+                date: new Date().toLocaleDateString('zh-HK'),
+                time: new Date().toLocaleTimeString('zh-HK', {hour:'2-digit', minute:'2-digit'}),
+                weather: weatherData || {temp:'?', humid:'?', desc:'無天氣資料'},
+                painLevel: activePainParts.size > 0 ? parseInt(document.getElementById('painRange').value) : 0,
+                parts: Array.from(activePainParts),
+                mood: document.getElementById('moodSelect').value,
+                energy: document.getElementById('bodySelect').value,
+                note: document.getElementById('noteInput').value
+            };
+
+            entries.unshift(entry);
+            localStorage.setItem('weather_pain_v3', JSON.stringify(entries));
+            
+            // 重置介面
+            activePainParts.clear();
+            initChips();
+            document.getElementById('intensitySection').classList.add('hidden');
+            document.getElementById('noteInput').value = "";
+            
+            renderHistory();
+            renderChart();
+            alert("紀錄成功！");
+        }
+
+        function renderHistory() {
+            const container = document.getElementById('historyContainer');
+            if(entries.length === 0) {
+                container.innerHTML = `<p class="text-center text-slate-400 py-10">開始記錄你的第一天吧</p>`;
+                return;
+            }
+
+            container.innerHTML = entries.map(item => `
+                <div class="glass-card p-5 shadow-sm border-l-4 ${item.painLevel > 5 ? 'border-l-red-500' : 'border-l-emerald-400'}">
+                    <div class="flex justify-between items-start mb-3">
+                        <span class="text-[10px] font-black text-slate-400 uppercase tracking-tighter">${item.date} · ${item.time}</span>
+                        <div class="flex items-center gap-2">
+                            <span class="text-xs font-bold text-blue-600">💧${item.weather.humid}%</span>
+                            <span class="text-xs font-bold text-slate-700">${item.weather.temp}°C</span>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        ${item.parts.length > 0 ? 
+                            `<div class="flex flex-wrap gap-1 mb-2">${item.parts.map(p => `<span class="px-2 py-0.5 bg-slate-100 text-slate-500 rounded text-[10px] font-bold">#${p}</span>`).join('')}</div>
+                             <div class="text-sm font-black text-red-500">痛症程度: ${item.painLevel}/10</div>` : 
+                            `<div class="text-sm font-bold text-emerald-500">身體狀況良好</div>`
+                        }
+                    </div>
+
+                    ${item.note ? `<p class="text-xs text-slate-500 italic bg-white/50 p-2 rounded-lg border border-slate-100">"${item.note}"</p>` : ''}
+                </div>
+            `).join('');
+        }
+
+        function renderChart() {
+            const ctx = document.getElementById('mainChart').getContext('2d');
+            if(myChart) myChart.destroy();
+
+            const data = [...entries].reverse().slice(-10);
+            if(data.length === 0) return;
+
+            myChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: data.map(d => d.date.split('/')[1] + '/' + d.date.split('/')[2]),
+                    datasets: [
+                        {
+                            label: '痛症級別',
+                            data: data.map(d => d.painLevel),
+                            borderColor: '#ef4444',
+                            backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                            fill: true,
+                            tension: 0.4
+                        },
+                        {
+                            label: '濕度',
+                            data: data.map(d => d.weather.humid === '?' ? 0 : d.weather.humid / 10),
+                            borderColor: '#3b82f6',
+                            borderDash: [5, 5],
+                            tension: 0.4
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: { min: 0, max: 10, display: false }
+                    },
+                    plugins: {
+                        legend: { display: false }
+                    }
+                }
+            });
+        }
+
+        function exportData() {
+            if(entries.length === 0) return alert("尚無數據可導出");
+            let csv = "日期,時間,溫度,濕度,痛症程度,疼痛部位,心情,活力,備註\n";
+            entries.forEach(e => {
+                csv += `${e.date},${e.time},${e.weather.temp},${e.weather.humid},${e.painLevel},"${e.parts.join('/')}",${e.mood},${e.energy},"${e.note}"\n`;
+            });
+            
+            const blob = new Blob(["\ufeff" + csv], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(blob);
+            link.setAttribute("download", `健康記錄_${new Date().toLocaleDateString()}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+    </script>
+</body>
+</html>
