@@ -23,7 +23,7 @@ import {
   Lock, 
   ShieldCheck,
   WifiOff,
-  Cloud // 修正：使用 Cloud 代替不存在的 CloudCheck
+  Cloud 
 } from 'lucide-react';
 import { Line } from 'react-chartjs-2';
 import {
@@ -119,7 +119,7 @@ export default function App() {
       const data = snapshot.docs.map(doc => ({ 
         id: doc.id, 
         ...doc.data(),
-        isPending: doc.metadata.hasPendingWrites // 檢查是否尚未同步到伺服器
+        isPending: doc.metadata.hasPendingWrites 
       }));
       setEntries(data.sort((a, b) => b.timestamp - a.timestamp));
       setLoading(false);
@@ -146,10 +146,6 @@ export default function App() {
     try {
       await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'entries'), newEntry);
       setWeatherTags([]); setPainParts([]); setMoods([]); setDiary(''); setTemp(''); setHumid('');
-      if (!isOnline) {
-        // 使用客製化訊息代替 alert
-        console.log("已暫存於本地");
-      }
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (e) { console.error("Save error", e); }
   };
@@ -174,7 +170,7 @@ export default function App() {
 
   return (
     <div className="max-w-md mx-auto px-4 pt-8 pb-24 bg-slate-50 min-h-screen font-sans transition-colors duration-500">
-      {/* 狀態列 */}
+      {/* 離線狀態提醒 */}
       {!isOnline && (
         <div className="fixed top-0 left-0 right-0 py-1.5 px-4 text-center bg-amber-500 z-[100] shadow-md animate-in fade-in slide-in-from-top">
           <p className="text-[10px] text-white font-bold flex items-center justify-center gap-2">
@@ -195,8 +191,9 @@ export default function App() {
         </div>
       </div>
 
-      {/* Form Sections */}
+      {/* 表單內容 */}
       <div className="space-y-6">
+        {/* 天氣區塊 */}
         <div className="bg-white p-6 rounded-[1.5rem] shadow-sm border border-slate-100">
           <h2 className="text-sm font-bold text-slate-400 uppercase mb-4 flex items-center gap-2"><CloudSun size={18} className="text-blue-500" /> 今日天氣</h2>
           <div className="flex flex-wrap gap-2 mb-4">
@@ -210,6 +207,7 @@ export default function App() {
           </div>
         </div>
 
+        {/* 痛症區塊 */}
         <div className="bg-white p-6 rounded-[1.5rem] shadow-sm border border-slate-100">
           <h2 className="text-sm font-bold text-slate-400 uppercase mb-4 flex items-center gap-2"><Activity size={18} className="text-red-500" /> 痛症追蹤</h2>
           <div className="flex flex-wrap gap-2 mb-4">
@@ -225,6 +223,7 @@ export default function App() {
           )}
         </div>
 
+        {/* 心情區塊 */}
         <div className="bg-white p-6 rounded-[1.5rem] shadow-sm border border-slate-100">
           <h2 className="text-sm font-bold text-slate-400 uppercase mb-4 flex items-center gap-2"><Smile size={18} className="text-teal-500" /> 心情日記</h2>
           <div className="flex flex-wrap gap-2 mb-4">
@@ -240,7 +239,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* Analytics */}
+      {/* 圖表分析 */}
       <div className="mt-8 bg-white p-5 rounded-[1.5rem] border border-slate-100 shadow-sm">
         <h3 className="text-[10px] font-bold text-slate-400 uppercase mb-4 text-center tracking-widest">個人痛症趨勢</h3>
         <div className="h-40">
@@ -252,7 +251,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* History */}
+      {/* 歷史紀錄 */}
       <div className="mt-8 space-y-4" id="historyContainer">
         <h3 className="text-xs font-bold text-slate-400 mb-2 px-2 flex items-center gap-2">
           <History size={14} /> 歷史紀錄
@@ -292,7 +291,7 @@ export default function App() {
         ))}
       </div>
 
-      {/* Nav */}
+      {/* 底部導航 */}
       <div className="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-md border-t border-slate-100 px-8 py-4 flex justify-around items-center z-50">
         <button onClick={() => window.scrollTo({top:0, behavior:'smooth'})} className="text-slate-400 hover:text-indigo-600 transition-colors"><PlusCircle size={26} /></button>
         <button onClick={() => document.getElementById('historyContainer')?.scrollIntoView({behavior:'smooth'})} className="text-slate-400 hover:text-indigo-600 transition-colors"><History size={26} /></button>
