@@ -1,387 +1,302 @@
-<!DOCTYPE html>
-<html lang="zh-Hant">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>天氣與痛症追蹤 App - 全方位多選版</title>
-    <!-- Tailwind CSS for modern UI -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Chart.js for data visualization -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <!-- Lucide Icons -->
-    <script src="https://unpkg.com/lucide@latest"></script>
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;700&display=swap');
-        
-        :root {
-            --primary: #4f46e5;
-            --danger: #ef4444;
-            --tcm-orange: #f59e0b;
-            --mood-teal: #0d9488;
-            --weather-blue: #3b82f6;
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, 
+  collection, 
+  addDoc, 
+  query, 
+  onSnapshot, 
+  enableIndexedDbPersistence
+} from 'firebase/firestore';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  onAuthStateChanged,
+  signInWithCustomToken 
+} from 'firebase/auth';
+import { 
+  CloudSun, 
+  Activity, 
+  Smile, 
+  PlusCircle, 
+  History, 
+  Lock, 
+  ShieldCheck,
+  WifiOff,
+  Cloud // 修正：使用 Cloud 代替不存在的 CloudCheck
+} from 'lucide-react';
+import { Line } from 'react-chartjs-2';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend,
+  Filler
+} from 'chart.js';
+
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler);
+
+// --- Firebase 配置 ---
+const firebaseConfig = typeof __firebase_config !== 'undefined' 
+  ? JSON.parse(__firebase_config) 
+  : { apiKey: "", authDomain: "", projectId: "", storageBucket: "", messagingSenderId: "", appId: "" };
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'weather-body-offline-v1';
+
+// 啟用 Firestore 離線持久化 (Offline Persistence)
+try {
+  enableIndexedDbPersistence(db).catch((err) => {
+    if (err.code === 'failed-precondition') {
+      console.warn("離線分頁僅限單一分頁使用");
+    } else if (err.code === 'unimplemented') {
+      console.warn("當前瀏覽器不支援離線存儲");
+    }
+  });
+} catch (e) {}
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  
+  // 表單狀態
+  const [weatherTags, setWeatherTags] = useState([]);
+  const [temp, setTemp] = useState('');
+  const [humid, setHumid] = useState('');
+  const [painParts, setPainParts] = useState([]);
+  const [painLevel, setPainLevel] = useState(1);
+  const [moods, setMoods] = useState([]);
+  const [diary, setDiary] = useState('');
+
+  const WEATHER_OPTIONS = ["🌤️ 晴朗", "☁️ 陰天", "🌧️ 潮濕", "⛈️ 雷雨", "🌬️ 有風", "🔥 燥熱", "❄️ 寒冷"];
+  const PAIN_PARTS = ["頭部", "頸項", "肩部", "手肘", "腰背", "膝部", "腳踝"];
+  const MOOD_OPTIONS = ["😊 開心", "😌 平靜", "🤩 興奮", "😠 煩燥", "😰 焦慮", "😔 沮喪", "😴 疲累"];
+
+  // 監測網絡狀態
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // 1. 初始化登入
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
         }
+      } catch (error) { console.error("Auth error:", error); }
+    };
+    initAuth();
+    return onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      if (!u) setLoading(false);
+    });
+  }, []);
 
-        body {
-            font-family: 'Noto Sans TC', sans-serif;
-            background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
-            min-height: 100vh;
-            -webkit-tap-highlight-color: transparent;
-        }
+  // 2. 數據監聽 (支援離線讀取)
+  useEffect(() => {
+    if (!user) return;
+    const q = query(collection(db, 'artifacts', appId, 'users', user.uid, 'entries'));
 
-        .glass-card {
-            background: rgba(255, 255, 255, 0.85);
-            backdrop-filter: blur(12px);
-            border: 1px solid rgba(255, 255, 255, 0.5);
-            border-radius: 1.5rem;
-        }
+    const unsubscribe = onSnapshot(q, { includeMetadataChanges: true }, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ 
+        id: doc.id, 
+        ...doc.data(),
+        isPending: doc.metadata.hasPendingWrites // 檢查是否尚未同步到伺服器
+      }));
+      setEntries(data.sort((a, b) => b.timestamp - a.timestamp));
+      setLoading(false);
+    }, (err) => {
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, [user]);
 
-        .chip {
-            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-            user-select: none;
-        }
+  const toggleTag = (list, setList, value) => {
+    setList(list.includes(value) ? list.filter(i => i !== value) : [...list, value]);
+  };
 
-        .chip.active-pain {
-            background-color: var(--danger);
-            color: white;
-            border-color: var(--danger);
-            transform: scale(1.05);
-            box-shadow: 0 4px 12px rgba(239, 68, 68, 0.2);
-        }
+  const submitEntry = async () => {
+    if (!user) return;
+    const newEntry = {
+      timestamp: Date.now(),
+      date: new Date().toLocaleDateString('zh-HK'),
+      time: new Date().toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit' }),
+      weatherTags, temp, humid, painLevel: painParts.length > 0 ? painLevel : 0,
+      parts: painParts, moods, diary
+    };
 
-        .chip.active-tcm {
-            background-color: var(--tcm-orange);
-            color: white;
-            border-color: var(--tcm-orange);
-            transform: scale(1.05);
-            box-shadow: 0 4px 12px rgba(245, 158, 11, 0.2);
-        }
+    try {
+      await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'entries'), newEntry);
+      setWeatherTags([]); setPainParts([]); setMoods([]); setDiary(''); setTemp(''); setHumid('');
+      if (!isOnline) {
+        // 使用客製化訊息代替 alert
+        console.log("已暫存於本地");
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (e) { console.error("Save error", e); }
+  };
 
-        .chip.active-mood {
-            background-color: var(--mood-teal);
-            color: white;
-            border-color: var(--mood-teal);
-            transform: scale(1.05);
-            box-shadow: 0 4px 12px rgba(13, 148, 136, 0.2);
-        }
+  const chartData = {
+    labels: [...entries].reverse().slice(-7).map(e => e.date.split('/')[1] + '/' + e.date.split('/')[2]),
+    datasets: [{
+      label: '痛症',
+      data: [...entries].reverse().slice(-7).map(e => e.painLevel),
+      borderColor: '#ef4444',
+      backgroundColor: 'rgba(239, 68, 68, 0.1)',
+      fill: true,
+      tension: 0.4
+    }]
+  };
 
-        .chip.active-weather {
-            background-color: var(--weather-blue);
-            color: white;
-            border-color: var(--weather-blue);
-            transform: scale(1.05);
-            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
-        }
-
-        /* 隱藏捲軸 */
-        .no-scrollbar::-webkit-scrollbar { display: none; }
-    </style>
-</head>
-<body class="pb-24">
-
-    <div class="max-w-md mx-auto px-4 pt-8">
-        <!-- App Header -->
-        <div class="flex justify-between items-center mb-6">
-            <div>
-                <h1 class="text-2xl font-black text-slate-800 tracking-tight">WeatherBody <span class="text-xs font-bold bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full ml-1">全方位多選版</span></h1>
-                <p class="text-xs text-slate-500 font-medium uppercase tracking-widest">天氣、痛症與心靈紀錄</p>
-            </div>
-            <button onclick="exportData()" class="p-2 bg-white rounded-full shadow-sm text-slate-400 hover:text-blue-500 transition-colors">
-                <i data-lucide="download" class="w-5 h-5"></i>
-            </button>
-        </div>
-
-        <!-- Section 1: Weather Manual Selection -->
-        <div class="glass-card p-6 mb-6 shadow-sm">
-            <h2 class="text-sm font-bold text-slate-400 uppercase tracking-widest mb-4 flex items-center">
-                <i data-lucide="cloud-sun" class="w-4 h-4 mr-2 text-blue-500"></i> 今日天氣概況 (可多選)
-            </h2>
-            <div id="weatherChips" class="flex flex-wrap gap-2 mb-6">
-                <!-- Weather Chips added by JS -->
-            </div>
-
-            <div class="grid grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-[10px] font-bold text-slate-400 uppercase mb-1">體感溫度 (°C)</label>
-                    <input type="number" id="tempInput" placeholder="25" 
-                           class="w-full p-2 bg-slate-100 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-400">
-                </div>
-                <div>
-                    <label class="block text-[10px] font-bold text-slate-400 uppercase mb-1">大約濕度 (%)</label>
-                    <input type="number" id="humidInput" placeholder="70" 
-                           class="w-full p-2 bg-slate-100 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-400">
-                </div>
-            </div>
-        </div>
-
-        <!-- Section 2: Pain & Body -->
-        <div class="glass-card p-6 mb-6 shadow-sm">
-            <h2 class="text-sm font-bold text-slate-400 uppercase tracking-widest mb-4 flex items-center">
-                <i data-lucide="activity" class="w-4 h-4 mr-2 text-red-500"></i> 疼痛部位 (受邪位置)
-            </h2>
-            <div id="painChips" class="flex flex-wrap gap-2 mb-6">
-                <!-- Chips added by JS -->
-            </div>
-
-            <div id="intensitySection" class="hidden animate-in fade-in slide-in-from-top-2">
-                <div class="flex justify-between items-end mb-2">
-                    <label class="text-xs font-bold text-slate-500">疼痛強度 (1-10)</label>
-                    <span id="painScore" class="text-2xl font-black text-red-500">1</span>
-                </div>
-                <input type="range" id="painRange" min="1" max="10" value="1" 
-                       class="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-red-500 mb-8"
-                       oninput="document.getElementById('painScore').innerText = this.value">
-            </div>
-
-            <hr class="border-slate-100 mb-6">
-
-            <h2 class="text-sm font-bold text-slate-400 uppercase tracking-widest mb-4 flex items-center">
-                <i data-lucide="sparkles" class="w-4 h-4 mr-2 text-orange-400"></i> 中醫徵象 (可多選)
-            </h2>
-            <div id="tcmChips" class="flex flex-wrap gap-2 mb-6">
-                <!-- Chips added by JS -->
-            </div>
-        </div>
-
-        <!-- Section 3: Mood -->
-        <div class="glass-card p-6 mb-6 shadow-sm">
-            <h2 class="text-sm font-bold text-slate-400 uppercase tracking-widest mb-4 flex items-center">
-                <i data-lucide="smile" class="w-4 h-4 mr-2 text-teal-500"></i> 今日心情 (可多選)
-            </h2>
-            <div id="moodSelectChips" class="flex flex-wrap gap-2 mb-6">
-                <!-- Chips added by JS -->
-            </div>
-
-            <h2 class="text-sm font-bold text-slate-400 uppercase tracking-widest mb-4 flex items-center">
-                <i data-lucide="pencil" class="w-4 h-4 mr-2 text-indigo-500"></i> 心情日記
-            </h2>
-            <textarea id="moodDiary" placeholder="今日心情細節或發生的事..." 
-                      class="w-full p-4 bg-indigo-50/30 border border-indigo-100 rounded-2xl text-sm min-h-[80px] outline-none mb-6 focus:ring-2 focus:ring-indigo-300"></textarea>
-
-            <div class="grid grid-cols-1 gap-4 mb-6 border-t border-slate-100 pt-6">
-                <div>
-                    <label class="block text-xs font-bold text-slate-400 uppercase mb-2">整體活力水平</label>
-                    <select id="bodySelect" class="w-full p-3 bg-slate-100 rounded-xl text-sm outline-none">
-                        <option value="5">⚡ 精力充沛</option>
-                        <option value="3" selected>🚶 一般體力</option>
-                        <option value="1">😫 虛弱乏力</option>
-                    </select>
-                </div>
-            </div>
-
-            <textarea id="noteInput" placeholder="其他備註 (如舌苔、大便、飲食情況)..." 
-                      class="w-full p-4 bg-slate-100 rounded-2xl text-sm min-h-[80px] outline-none mb-4"></textarea>
-
-            <button onclick="submitEntry()" class="w-full py-4 bg-slate-800 text-white rounded-2xl font-bold shadow-lg active:scale-95 transition-all">
-                儲存今日全紀錄
-            </button>
-        </div>
-
-        <!-- Analytics -->
-        <div class="glass-card p-5 mb-6">
-            <h3 class="text-sm font-bold text-slate-400 uppercase mb-4 tracking-widest text-center">趨勢預覽</h3>
-            <div class="h-48 w-full">
-                <canvas id="mainChart"></canvas>
-            </div>
-        </div>
-
-        <!-- History -->
-        <div id="historyContainer" class="space-y-4">
-            <!-- Records -->
-        </div>
+  if (loading) return (
+    <div className="flex flex-col h-screen items-center justify-center bg-slate-50">
+      <div className="w-10 h-10 border-4 border-slate-200 border-t-indigo-600 rounded-full animate-spin"></div>
     </div>
+  );
 
-    <!-- Navigation -->
-    <div class="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-md border-t border-slate-100 px-8 py-3 flex justify-around items-center z-50">
-        <button onclick="window.scrollTo({top:0, behavior:'smooth'})" class="text-indigo-600"><i data-lucide="plus-circle"></i></button>
-        <button onclick="document.getElementById('historyContainer').scrollIntoView({behavior:'smooth'})" class="text-slate-400"><i data-lucide="history"></i></button>
-        <button onclick="exportData()" class="text-slate-400"><i data-lucide="download"></i></button>
+  return (
+    <div className="max-w-md mx-auto px-4 pt-8 pb-24 bg-slate-50 min-h-screen font-sans transition-colors duration-500">
+      {/* 狀態列 */}
+      {!isOnline && (
+        <div className="fixed top-0 left-0 right-0 py-1.5 px-4 text-center bg-amber-500 z-[100] shadow-md animate-in fade-in slide-in-from-top">
+          <p className="text-[10px] text-white font-bold flex items-center justify-center gap-2">
+            <WifiOff size={12} /> 離線紀錄模式：紀錄將於聯網後自動同步
+          </p>
+        </div>
+      )}
+
+      <div className="flex justify-between items-center mb-6">
+        <div>
+          <h1 className="text-2xl font-black text-slate-800 tracking-tight">WeatherBody</h1>
+          <div className="flex items-center gap-1.5 mt-1">
+             {isOnline ? <ShieldCheck size={12} className="text-emerald-500" /> : <WifiOff size={12} className="text-amber-500" />}
+             <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
+               {isOnline ? '雲端安全連接中' : '離線操作模式'}
+             </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Form Sections */}
+      <div className="space-y-6">
+        <div className="bg-white p-6 rounded-[1.5rem] shadow-sm border border-slate-100">
+          <h2 className="text-sm font-bold text-slate-400 uppercase mb-4 flex items-center gap-2"><CloudSun size={18} className="text-blue-500" /> 今日天氣</h2>
+          <div className="flex flex-wrap gap-2 mb-4">
+            {WEATHER_OPTIONS.map(opt => (
+              <button key={opt} onClick={() => toggleTag(weatherTags, setWeatherTags, opt)} className={`px-3 py-2 rounded-full text-xs font-medium transition-all border ${weatherTags.includes(opt) ? 'bg-blue-500 text-white border-blue-500 shadow-md' : 'bg-white text-slate-600 border-slate-200'}`}>{opt}</button>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <input type="number" value={temp} onChange={e => setTemp(e.target.value)} placeholder="溫度 °C" className="w-full p-3 bg-slate-50 rounded-xl text-sm border border-slate-100 outline-none focus:ring-2 focus:ring-blue-400" />
+            <input type="number" value={humid} onChange={e => setHumid(e.target.value)} placeholder="濕度 %" className="w-full p-3 bg-slate-50 rounded-xl text-sm border border-slate-100 outline-none focus:ring-2 focus:ring-blue-400" />
+          </div>
+        </div>
+
+        <div className="bg-white p-6 rounded-[1.5rem] shadow-sm border border-slate-100">
+          <h2 className="text-sm font-bold text-slate-400 uppercase mb-4 flex items-center gap-2"><Activity size={18} className="text-red-500" /> 痛症追蹤</h2>
+          <div className="flex flex-wrap gap-2 mb-4">
+            {PAIN_PARTS.map(opt => (
+              <button key={opt} onClick={() => toggleTag(painParts, setPainParts, opt)} className={`px-3 py-2 rounded-full text-xs font-medium transition-all border ${painParts.includes(opt) ? 'bg-red-500 text-white border-red-500 shadow-md' : 'bg-white text-slate-600 border-slate-200'}`}>{opt}</button>
+            ))}
+          </div>
+          {painParts.length > 0 && (
+            <div className="pt-2">
+              <div className="flex justify-between items-center mb-1"><span className="text-xs font-bold text-slate-500">疼痛強度</span><span className="text-xl font-black text-red-500">{painLevel}</span></div>
+              <input type="range" min="1" max="10" value={painLevel} onChange={e => setPainLevel(e.target.value)} className="w-full h-2 bg-slate-100 rounded-lg appearance-none accent-red-500" />
+            </div>
+          )}
+        </div>
+
+        <div className="bg-white p-6 rounded-[1.5rem] shadow-sm border border-slate-100">
+          <h2 className="text-sm font-bold text-slate-400 uppercase mb-4 flex items-center gap-2"><Smile size={18} className="text-teal-500" /> 心情日記</h2>
+          <div className="flex flex-wrap gap-2 mb-4">
+            {MOOD_OPTIONS.map(opt => (
+              <button key={opt} onClick={() => toggleTag(moods, setMoods, opt)} className={`px-3 py-2 rounded-full text-xs font-medium transition-all border ${moods.includes(opt) ? 'bg-teal-500 text-white border-teal-500 shadow-md' : 'bg-white text-slate-600 border-slate-200'}`}>{opt}</button>
+            ))}
+          </div>
+          <textarea value={diary} onChange={e => setDiary(e.target.value)} placeholder="今日身心狀態備註..." className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl text-sm min-h-[100px] outline-none mb-6 focus:ring-2 focus:ring-indigo-100" />
+          <button onClick={submitEntry} className={`w-full py-4 text-white rounded-2xl font-bold shadow-lg transition-all flex items-center justify-center gap-2 ${isOnline ? 'bg-slate-900' : 'bg-amber-600 hover:bg-amber-700'}`}>
+            {isOnline ? <Cloud size={18} /> : <WifiOff size={18} />} 
+            {isOnline ? '同步儲存至雲端' : '儲存至本地 (待同步)'}
+          </button>
+        </div>
+      </div>
+
+      {/* Analytics */}
+      <div className="mt-8 bg-white p-5 rounded-[1.5rem] border border-slate-100 shadow-sm">
+        <h3 className="text-[10px] font-bold text-slate-400 uppercase mb-4 text-center tracking-widest">個人痛症趨勢</h3>
+        <div className="h-40">
+          {entries.length > 1 ? (
+            <Line data={chartData} options={{ responsive: true, maintainAspectRatio: false, scales: { y: { display: false, min: 0, max: 10 }, x: { grid: { display: false } } }, plugins: { legend: { display: false } } }} />
+          ) : (
+            <div className="h-full flex items-center justify-center text-slate-300 text-[10px] italic">記錄更多數據後自動生成圖表</div>
+          )}
+        </div>
+      </div>
+
+      {/* History */}
+      <div className="mt-8 space-y-4" id="historyContainer">
+        <h3 className="text-xs font-bold text-slate-400 mb-2 px-2 flex items-center gap-2">
+          <History size={14} /> 歷史紀錄
+        </h3>
+        {entries.length === 0 ? (
+          <div className="text-center py-12 text-slate-400 text-xs italic bg-white/50 rounded-[1.5rem]">尚無紀錄</div>
+        ) : entries.map(item => (
+          <div key={item.id} className="bg-white p-5 rounded-[1.5rem] shadow-sm border border-slate-100 relative overflow-hidden group">
+            <div className="flex justify-between items-start mb-3">
+              <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-2 py-0.5 rounded">{item.date} {item.time}</span>
+              <div className="flex items-center gap-1">
+                {item.isPending ? (
+                  <div className="flex items-center gap-1 text-amber-500 animate-pulse">
+                    <WifiOff size={10} />
+                    <span className="text-[8px] font-bold">待同步</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1 text-emerald-500">
+                    <Cloud size={10} />
+                    <span className="text-[8px] font-bold">已同步</span>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {item.weatherTags?.map(w => <span key={w} className="text-[9px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full font-bold border border-blue-100">{w}</span>)}
+              {item.moods?.map(m => <span key={m} className="text-[9px] bg-teal-50 text-teal-600 px-2 py-0.5 rounded-full font-bold border border-teal-100">{m}</span>)}
+            </div>
+            {item.diary && <p className="text-xs text-slate-600 bg-slate-50/50 p-3 rounded-xl mb-2 leading-relaxed">{item.diary}</p>}
+            {item.parts?.length > 0 && (
+              <div className="flex items-center gap-2 mt-2">
+                <span className="text-[9px] font-black text-red-500 px-2 py-0.5 bg-red-50 rounded uppercase">痛症 {item.painLevel}</span>
+                <span className="text-[9px] text-slate-400">{item.parts.join(', ')}</span>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Nav */}
+      <div className="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-md border-t border-slate-100 px-8 py-4 flex justify-around items-center z-50">
+        <button onClick={() => window.scrollTo({top:0, behavior:'smooth'})} className="text-slate-400 hover:text-indigo-600 transition-colors"><PlusCircle size={26} /></button>
+        <button onClick={() => document.getElementById('historyContainer')?.scrollIntoView({behavior:'smooth'})} className="text-slate-400 hover:text-indigo-600 transition-colors"><History size={26} /></button>
+      </div>
     </div>
-
-    <script>
-        const WEATHER_OPTIONS = ["🌤️ 晴朗", "☁️ 陰天", "🌧️ 潮濕/下雨", "⛈️ 雷雨", "🌬️ 有風", "🌫️ 霧氣/大霧", "🔥 酷熱/燥熱", "❄️ 寒冷"];
-        const PAIN_PARTS = ["頭部", "頸項", "肩部", "手肘", "手指/腕", "腰背", "膝部", "腳踝"];
-        const MOOD_OPTIONS = ["😊 開心", "😌 平靜", "🤩 興奮", "🤔 困惑", "😠 煩燥", "😰 焦慮", "😔 沮喪", "😴 疲累", "😤 憤怒", "😶 無感"];
-        const TCM_SYMPTOMS = [
-            { label: "✨ 神清氣爽", value: "神清氣爽" },
-            { label: "👅 口乾舌燥", value: "口乾舌燥" },
-            { label: "☁️ 頭重身困", value: "頭重身困" },
-            { label: "😫 提不起勁", value: "提不起勁" },
-            { label: "🔥 心煩易怒", value: "心煩易怒" },
-            { label: "🌫️ 憂鬱不舒", value: "憂鬱不舒" },
-            { label: "💓 心慌心悸", value: "心慌心悸" },
-            { label: "🪫 易攰乏力", value: "易攰乏力" },
-            { label: "🛌 渴睡多夢", value: "渴睡多夢" },
-            { label: "💨 腹脹胸悶", value: "腹脹胸悶" }
-        ];
-
-        let activeWeather = new Set();
-        let activePainParts = new Set();
-        let activeMoods = new Set();
-        let activeTcmSymptoms = new Set();
-        let entries = JSON.parse(localStorage.getItem('weather_body_diary_v3')) || [];
-        let myChart = null;
-
-        document.addEventListener('DOMContentLoaded', () => {
-            lucide.createIcons();
-            initChips('weatherChips', WEATHER_OPTIONS, toggleWeatherChip);
-            initChips('painChips', PAIN_PARTS, togglePainChip);
-            initChips('moodSelectChips', MOOD_OPTIONS, toggleMoodSelectChip);
-            initTcmChips();
-            renderHistory();
-            renderChart();
-        });
-
-        function initChips(id, options, callback) {
-            const container = document.getElementById(id);
-            container.innerHTML = options.map(opt => `
-                <button onclick="(${callback.name})(this, '${opt}')" class="chip px-3 py-2 bg-white border border-slate-200 rounded-full text-xs font-medium text-slate-600 shadow-sm">
-                    ${opt}
-                </button>
-            `).join('');
-        }
-
-        function initTcmChips() {
-            const container = document.getElementById('tcmChips');
-            container.innerHTML = TCM_SYMPTOMS.map(s => `
-                <button onclick="toggleTcmChip(this, '${s.value}')" class="chip px-3 py-2 bg-white border border-slate-200 rounded-full text-xs font-medium text-slate-600 shadow-sm">
-                    ${s.label}
-                </button>
-            `).join('');
-        }
-
-        function toggleWeatherChip(el, val) {
-            if(activeWeather.has(val)) { activeWeather.delete(val); el.classList.remove('active-weather'); }
-            else { activeWeather.add(val); el.classList.add('active-weather'); }
-        }
-
-        function togglePainChip(el, part) {
-            if(activePainParts.has(part)) { activePainParts.delete(part); el.classList.remove('active-pain'); }
-            else { activePainParts.add(part); el.classList.add('active-pain'); }
-            document.getElementById('intensitySection').classList.toggle('hidden', activePainParts.size === 0);
-        }
-
-        function toggleMoodSelectChip(el, mood) {
-            if(activeMoods.has(mood)) { activeMoods.delete(mood); el.classList.remove('active-mood'); }
-            else { activeMoods.add(mood); el.classList.add('active-mood'); }
-        }
-
-        function toggleTcmChip(el, value) {
-            if(activeTcmSymptoms.has(value)) { activeTcmSymptoms.delete(value); el.classList.remove('active-tcm'); }
-            else { activeTcmSymptoms.add(value); el.classList.add('active-tcm'); }
-        }
-
-        function submitEntry() {
-            const entry = {
-                id: Date.now(),
-                date: new Date().toLocaleDateString('zh-HK'),
-                time: new Date().toLocaleTimeString('zh-HK', {hour:'2-digit', minute:'2-digit'}),
-                weatherTags: Array.from(activeWeather),
-                temp: document.getElementById('tempInput').value || '?',
-                humid: document.getElementById('humidInput').value || '?',
-                painLevel: activePainParts.size > 0 ? parseInt(document.getElementById('painRange').value) : 0,
-                parts: Array.from(activePainParts),
-                moods: Array.from(activeMoods),
-                tcmSymptoms: Array.from(activeTcmSymptoms),
-                diary: document.getElementById('moodDiary').value,
-                energy: document.getElementById('bodySelect').value,
-                note: document.getElementById('noteInput').value
-            };
-            
-            entries.unshift(entry);
-            localStorage.setItem('weather_body_diary_v3', JSON.stringify(entries));
-            
-            // 重置 UI
-            location.reload(); // 簡單直接的重置方式
-        }
-
-        function renderHistory() {
-            const container = document.getElementById('historyContainer');
-            if(entries.length === 0) {
-                container.innerHTML = `<p class="text-center text-slate-400 py-10">尚無歷史紀錄</p>`;
-                return;
-            }
-            container.innerHTML = entries.map(item => `
-                <div class="glass-card p-5 shadow-sm border-l-4 ${item.painLevel > 4 ? 'border-l-red-400' : 'border-l-indigo-400'}">
-                    <div class="flex justify-between items-start mb-3">
-                        <span class="text-[10px] font-black text-slate-400 uppercase tracking-tight">${item.date} ${item.time}</span>
-                        <div class="text-right">
-                            <span class="text-[10px] font-bold text-blue-500 bg-blue-50 px-2 py-0.5 rounded">${item.temp}°C / ${item.humid}% 💧</span>
-                        </div>
-                    </div>
-                    
-                    <div class="mb-3 space-y-2">
-                        <!-- Weather Tags -->
-                        <div class="flex flex-wrap gap-1 mb-1">
-                            ${(item.weatherTags || []).map(w => `<span class="px-2 py-0.5 bg-blue-50 text-blue-600 rounded-md text-[10px] font-bold border border-blue-100">${w}</span>`).join('')}
-                        </div>
-
-                        <!-- Mood & TCM Tags -->
-                        <div class="flex flex-wrap gap-1">
-                            ${(item.moods || []).map(m => `<span class="px-2 py-0.5 bg-teal-50 text-teal-600 rounded-md text-[10px] font-bold border border-teal-100">${m}</span>`).join('')}
-                            ${(item.tcmSymptoms || []).map(s => `<span class="px-2 py-0.5 bg-orange-50 text-orange-600 rounded-md text-[10px] font-bold border border-orange-100">${s}</span>`).join('')}
-                        </div>
-
-                        <!-- Mood Diary Text -->
-                        ${item.diary ? `<div class="bg-indigo-50/50 p-3 rounded-xl border border-indigo-100 text-xs text-slate-700">${item.diary}</div>` : ''}
-
-                        <!-- Pain Info -->
-                        ${item.parts.length > 0 ? 
-                            `<div class="bg-red-50/50 p-2 rounded-lg">
-                                <p class="text-[11px] font-black text-red-600 mb-1">痛症強度: ${item.painLevel}/10 (${item.parts.join(', ')})</p>
-                            </div>` : ''
-                        }
-                    </div>
-
-                    ${item.note ? `<p class="text-[11px] text-slate-400 italic">備註：${item.note}</p>` : ''}
-                </div>
-            `).join('');
-            lucide.createIcons();
-        }
-
-        function renderChart() {
-            const ctx = document.getElementById('mainChart').getContext('2d');
-            if(myChart) myChart.destroy();
-            const data = [...entries].reverse().slice(-10);
-            if(data.length === 0) return;
-            myChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: data.map(d => d.date.split('/')[1] + '/' + d.date.split('/')[2]),
-                    datasets: [{
-                        label: '痛症',
-                        data: data.map(d => d.painLevel),
-                        borderColor: '#ef4444',
-                        backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                        tension: 0.4,
-                        fill: true
-                    }, {
-                        label: '濕度',
-                        data: data.map(d => (parseInt(d.humid) || 0) / 10),
-                        borderColor: '#3b82f6',
-                        borderDash: [5, 5],
-                        tension: 0.4,
-                        fill: false
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    scales: { y: { display: false, min: 0, max: 10 }, x: { grid: { display: false } } },
-                    plugins: { legend: { display: false } }
-                }
-            });
-        }
-
-        function exportData() {
-            if(entries.length === 0) return alert("尚無紀錄");
-            let csv = "日期,時間,天氣標籤,溫度,濕度,痛症程度,部位,心情,中醫徵象,心情日記,備註\n";
-            entries.forEach(e => csv += `${e.date},${e.time},"${(e.weatherTags||[]).join('/')}",${e.temp},${e.humid},${e.painLevel},"${e.parts.join('/')}","${(e.moods||[]).join('/')}","${(e.tcmSymptoms||[]).join('/')}","${e.diary}","${e.note}"\n`);
-            const blob = new Blob(["\ufeff" + csv], { type: 'text/csv;charset=utf-8;' });
-            const link = document.createElement("a");
-            link.href = URL.createObjectURL(blob);
-            link.setAttribute("download", `身心全紀錄_手動天氣版.csv`);
-            link.click();
-        }
-    </script>
-</body>
-</html>
+  );
+}
